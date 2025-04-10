@@ -25,12 +25,26 @@ import java.util.List;
 
 public class SolverIDDFS extends Solver {
     
-    private static final int MAX_DEPTH = 126;
+    // Lower MAX_DEPTH for 5+ robots to prevent OOM errors
+    // The search space grows exponentially with more robots
+    private static int getMaxDepthForRobots(int numRobots) {
+        // Scale down max depth based on number of robots to prevent OOM
+        if (numRobots >= 5) {
+            // Much lower depth for 5+ robots since search space is exponentially larger
+            return 24;
+        } else if (numRobots >= 4) {
+            return 64;
+        } else {
+            return 126; // Original MAX_DEPTH for 1-3 robots
+        }
+    }
+    
+    private final int MAX_DEPTH; // maximal depth of search tree to prevent OOM
     
     private final int[][] states;
     private final int[][] directions;
     private static final int DIRECTION_NOT_MOVED_YET = 7;
-    private final int[][] obstacles = new int[MAX_DEPTH][];
+    private final int[][] obstacles; // initialice in the SolverIDDFS constructor
     private static final int OBSTACLE_ROBOT = (1 << 4);
     private KnownStates knownStates;
     private final int goalPosition;
@@ -45,7 +59,9 @@ public class SolverIDDFS extends Solver {
 
     protected SolverIDDFS(final Board board) {
         super(board);
-        this.initObstacles();
+        this.MAX_DEPTH = getMaxDepthForRobots(board.getNumRobots());
+        this.obstacles = new int[MAX_DEPTH][]; // Initialize here
+        this.initObstacles(); // Call after MAX_DEPTH and obstacles are initialized
         this.states = new int[MAX_DEPTH][this.board.getRobotPositions().length];
         this.directions = new int[MAX_DEPTH][this.board.getRobotPositions().length];
         this.goalPosition = (null == this.board.getGoal() ? 0 : this.board.getGoal().position);
@@ -81,7 +97,11 @@ public class SolverIDDFS extends Solver {
         this.lastResultSolutions = new ArrayList<Solution>();
         
         Logger.println("***** " + this.getClass().getSimpleName() + " *****");
-        Logger.println("options: " + this.getOptionsAsString());
+        Logger.println("Options: " + this.getOptionsAsString());
+        Logger.println(android.util.Log.DEBUG, "DriftingDroid", "[SOLVER_MEMORY] Number of robots: %d, Using MAX_DEPTH: %d", board.getNumRobots(), this.MAX_DEPTH);
+        Logger.println(android.util.Log.DEBUG, "DriftingDroid", "[SOLVER_MEMORY] Available memory: %d MB, Max memory: %d MB", 
+                Runtime.getRuntime().freeMemory() / (1024 * 1024),
+                Runtime.getRuntime().maxMemory() / (1024 * 1024));
         
         if (null == this.board.getGoal()) {
             Logger.println("no goal is set - nothing to solve!");

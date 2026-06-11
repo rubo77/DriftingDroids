@@ -17,6 +17,7 @@
 
 package driftingdroids.model;
 
+import android.util.Log;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;

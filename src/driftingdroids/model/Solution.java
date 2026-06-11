@@ -17,6 +17,7 @@
 
 package driftingdroids.model;
 
+import android.util.Log;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Deque;
@@ -27,6 +28,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.TreeSet;
 
+import timber.log.Timber;
 
 
 public class Solution implements Comparable<Solution> {

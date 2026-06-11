@@ -17,19 +17,12 @@
 
 package driftingdroids.model;
 
-import android.util.Log;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 
-import timber.log.Timber;
 
-/**
- * Solver using Iterative Deepening Depth-First Search (IDDFS).
- * 
- * @author Michael Henke
- * @version 1.0
- */
+
 public class SolverIDDFS extends Solver {
     
     // Lower MAX_DEPTH for 5+ robots to prevent OOM errors

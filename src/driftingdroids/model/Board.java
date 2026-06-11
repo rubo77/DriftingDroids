@@ -27,20 +27,25 @@ import java.util.Formatter;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Random;
-import java.util.ResourceBundle;
 import java.util.zip.CRC32;
 import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
+import roboyard.logic.core.Constants;
+import roboyard.ui.activities.MainActivity;
+import timber.log.Timber;
 
-
+/**
+ * Board class represents the game board state including walls, robots, and goals.
+ * Handles board creation, modification, and game state management.
+ */
 public class Board {
-    static final ResourceBundle L10N = ResourceBundle.getBundle("resource/driftingdroids-localization-model");   //L10N = Localization
+
     public static L10N L10N = new L10N();
-    public static final int WIDTH_STANDARD = 16;
+    public static final int WIDTH_STANDARD = MainActivity.boardSizeX;
     public static final int WIDTH_MIN = 3;
     public static final int WIDTH_MAX = 100;
-    public static final int HEIGHT_STANDARD = 16;
+    public static final int HEIGHT_STANDARD = MainActivity.boardSizeY;
     public static final int HEIGHT_MIN = 3;
     public static final int HEIGHT_MAX = 100;
     public static final int SIZE_MAX = 4096; // 12 bits
@@ -209,10 +214,10 @@ public class Board {
     public final int size;      // width * height
     public final int sizeNumBits;   //number of bits required to store any board position (size - 1)
 
-    public static final int NORTH = 0;  // up
-    public static final int EAST  = 1;  // right
-    public static final int SOUTH = 2;  // down
-    public static final int WEST  = 3;  // left
+    public static final int NORTH = Constants.NORTH;  // up
+    public static final int EAST  = Constants.EAST;  // right
+    public static final int SOUTH = Constants.SOUTH;  // down
+    public static final int WEST  = Constants.WEST;  // left
     
     public final int[] directionIncrement;
     
@@ -227,6 +232,10 @@ public class Board {
     private int[] robots;               // index=robot, value=position
     private boolean isFreestyleBoard;
 
+    /**
+     * Inner class representing a goal on the board with position, robot, and shape information.
+     * Implements Comparable to allow sorting of goals by robot number, shape, and position.
+     */
     public class Goal implements Comparable<Goal> {
         public final int x, y, position, robotNumber, shape;
         public Goal(int x, int y, int robotNumber, int shape) {
@@ -286,6 +295,11 @@ public class Board {
     }
 
 
+    /**
+     * Gets a list of all goals in a specified quadrant.
+     * @param quadrant Index of the quadrant to get goals from
+     * @return List of goals in the quadrant, sorted by robot number, shape, and position
+     */
     public static List<Goal> getStaticQuadrantGoals(final int quadrant) {
         final List<Goal> result = new ArrayList<>(QUADRANTS[quadrant].goals);
         Collections.sort(result);
@@ -293,6 +307,13 @@ public class Board {
     }
 
 
+    /**
+     * Creates a new board with specified dimensions and number of robots.
+     * Initializes board state including walls, robots, and goals.
+     * @param width Width of the board
+     * @param height Height of the board
+     * @param numRobots Number of robots to place
+     */
     private Board(int width, int height, int numRobots) {
         this.width = width;
         this.height = height;
@@ -391,7 +412,7 @@ public class Board {
                 newBoard.setRobot(robot, newPos, false);
             }
             // copy of some robot didn't succeed, set it on lowest possible position
-            for (int robot = 0;  robot < newBoard.getNumRobots();  ++robot) {
+            for (int robot = 0;  robot < newBoard.robots.length;  ++robot) {
                 if (0 > newBoard.robots[robot]) {
                     for (int pos = 0;  pos < newBoard.size;  ++pos) {
                         if (true == newBoard.setRobot(robot, pos, false)) {

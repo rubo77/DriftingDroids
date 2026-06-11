@@ -35,7 +35,7 @@ import java.util.zip.Inflater;
 
 public class Board {
     static final ResourceBundle L10N = ResourceBundle.getBundle("resource/driftingdroids-localization-model");   //L10N = Localization
-    
+    public static L10N L10N = new L10N();
     public static final int WIDTH_STANDARD = 16;
     public static final int WIDTH_MIN = 3;
     public static final int WIDTH_MAX = 100;

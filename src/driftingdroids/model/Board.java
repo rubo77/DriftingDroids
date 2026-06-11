@@ -32,7 +32,6 @@ import java.util.zip.Deflater;
 import java.util.zip.Inflater;
 
 import roboyard.logic.core.Constants;
-import roboyard.ui.activities.MainActivity;
 import timber.log.Timber;
 
 /**
@@ -42,10 +41,10 @@ import timber.log.Timber;
 public class Board {
 
     public static L10N L10N = new L10N();
-    public static final int WIDTH_STANDARD = MainActivity.boardSizeX;
+    public static final int WIDTH_STANDARD = roboyard.ui.activities.MainActivity.boardSizeX;
     public static final int WIDTH_MIN = 3;
     public static final int WIDTH_MAX = 100;
-    public static final int HEIGHT_STANDARD = MainActivity.boardSizeY;
+    public static final int HEIGHT_STANDARD = roboyard.ui.activities.MainActivity.boardSizeY;
     public static final int HEIGHT_MIN = 3;
     public static final int HEIGHT_MAX = 100;
     public static final int SIZE_MAX = 4096; // 12 bits
@@ -228,6 +227,7 @@ public class Board {
     private final List<Goal> goals;     // all possible goals on the board
     private final List<Goal> randomGoals;
     private Goal goal;                  // the current goal
+    private List<Goal> activeGoals;     // all active goals for multi-goal mode
     
     private int[] robots;               // index=robot, value=position
     private boolean isFreestyleBoard;
@@ -1257,6 +1257,26 @@ public class Board {
      */
     public Goal getGoal() {
         return this.goal;
+    }
+    
+    public List<Goal> getGoals() {
+        return this.goals;
+    }
+    
+    public List<Goal> getActiveGoals() {
+        if (this.activeGoals != null && !this.activeGoals.isEmpty()) {
+            return this.activeGoals;
+        }
+        List<Goal> single = new ArrayList<>();
+        if (this.goal != null) { single.add(this.goal); }
+        return single;
+    }
+    
+    public void setActiveGoals(List<Goal> goals) {
+        this.activeGoals = new ArrayList<>(goals);
+        if (!goals.isEmpty()) {
+            this.goal = goals.get(0);
+        }
     }
     
     /**

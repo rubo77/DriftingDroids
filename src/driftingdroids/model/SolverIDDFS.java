@@ -32,7 +32,21 @@ import timber.log.Timber;
  */
 public class SolverIDDFS extends Solver {
     
-    private static final int MAX_DEPTH = 126;
+    // Lower MAX_DEPTH for 5+ robots to prevent OOM errors
+    // The search space grows exponentially with more robots
+    private static int getMaxDepthForRobots(int numRobots) {
+        // Scale down max depth based on number of robots to prevent OOM
+        if (numRobots >= 5) {
+            // Much lower depth for 5+ robots since search space is exponentially larger
+            return 24;
+        } else if (numRobots >= 4) {
+            return 64;
+        } else {
+            return 126; // Original MAX_DEPTH for 1-3 robots
+        }
+    }
+    
+    private final int MAX_DEPTH; // maximal depth of search tree to prevent OOM
     
     private final int[][] states;
     private final int[][] directions;

@@ -37,7 +37,7 @@ public abstract class Solver {
 
     public static final boolean USE_SLOW_SEARCH_MORE_SOLUTIONS;
     static {
-        boolean useSlowSearchMoreSolutions = false;
+        boolean useSlowSearchMoreSolutions = false; // TODO: test slow solver with more solutions
         try {
             useSlowSearchMoreSolutions = (null != System.getProperty("UseSlowSearchMoreSolutions"));
         } catch (Exception ignored) { }

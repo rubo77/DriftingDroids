@@ -14,198 +14,181 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+package driftingdroids.model
 
-package driftingdroids.model;
+import android.util.Log
+import java.util.Arrays
+import kotlin.concurrent.Volatile
 
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
+class SolverIDDFS(board: Board) : Solver(board) {
+    private val MAX_DEPTH: Int // maximal depth of search tree to prevent OOM
 
+    private val states: Array<IntArray>
+    private val directions: Array<IntArray>
+    private val obstacles: Array<IntArray> // initialice in the SolverIDDFS constructor
+    private var knownStates: KnownStates? = null
+    private val goalPosition: Int
+    private val minRobotLast: Int
+    private val goalRobot: Int
+    private val isSolution01: Boolean
+    private val isSolution01NoSpeedup: Boolean
+    private val minimumMovesToGoal: IntArray
+    private val directionIncrement: IntArray
 
-
-public class SolverIDDFS extends Solver {
-    
-    // Lower MAX_DEPTH for 5+ robots to prevent OOM errors
-    // The search space grows exponentially with more robots
-    private static int getMaxDepthForRobots(int numRobots) {
-        // Scale down max depth based on number of robots to prevent OOM
-        if (numRobots >= 5) {
-            // Much lower depth for 5+ robots since search space is exponentially larger
-            return 24;
-        } else if (numRobots >= 4) {
-            return 64;
-        } else {
-            return 126; // Original MAX_DEPTH for 1-3 robots
-        }
-    }
-    
-    // Calculate max depth for multi-goal mode
-    // Multi-goal search space is exponentially larger, but memory check prevents OOM
-    // These limits allow finding solutions while memory monitoring prevents crashes
-    private static int getMaxDepthForMultiGoal(int numRobots) {
-        if (numRobots >= 5) {
-            return 18; // 5+ robots: very large branching factor
-        } else if (numRobots >= 4) {
-            return 25; // 4 robots: DFS call-stack explodes at depth 15+ on 512MB heap
-        } else {
-            return 30; // 1-3 robots: smaller branching factor allows deeper search
-        }
-    }
-    
-    private final int MAX_DEPTH; // maximal depth of search tree to prevent OOM
-    
-    private final int[][] states;
-    private final int[][] directions;
-    private static final int DIRECTION_NOT_MOVED_YET = 7;
-    private final int[][] obstacles; // initialice in the SolverIDDFS constructor
-    private static final int OBSTACLE_ROBOT = (1 << 4);
-    private KnownStates knownStates;
-    private final int goalPosition;
-    private final int minRobotLast;
-    private final int goalRobot;
-    private final boolean isSolution01, isSolution01NoSpeedup;
-    private final int[] minimumMovesToGoal;
-    private final int[] directionIncrement;
-    
     // Multi-goal support
-    private final boolean isMultiGoalMode;
-    private final int[] activeGoalPositions;
-    private final int[] activeGoalRobots;
-    
-    // Memory monitoring: periodic check inside DFS recursion
-    private volatile boolean memoryLow = false;
-    private int recursionCounter = 0;
-    private int memoryCheckInterval; // Check every N recursions (set in constructor)
-    // Memory checks use freeBytes = maxMemory - totalMemory + freeMemory, abort if < 25% free
-    
-    private int depthLimit;
-    
+    private val isMultiGoalMode: Boolean
+    private val activeGoalPositions: IntArray
+    private val activeGoalRobots: IntArray
 
-    protected SolverIDDFS(final Board board) {
-        super(board);
-        
+    // Memory monitoring: periodic check inside DFS recursion
+    @Volatile
+    private var memoryLow = false
+    private var recursionCounter = 0
+    private val memoryCheckInterval: Int // Check every N recursions (set in constructor)
+
+    // Memory checks use freeBytes = maxMemory - totalMemory + freeMemory, abort if < 25% free
+    private var depthLimit = 0
+
+
+    init {
         // Multi-goal support: determine mode first to calculate correct MAX_DEPTH
-        final List<Board.Goal> activeGoals = this.board.getActiveGoals();
-        this.isMultiGoalMode = (activeGoals.size() > 1);
-        this.activeGoalPositions = new int[activeGoals.size()];
-        this.activeGoalRobots = new int[activeGoals.size()];
-        for (int i = 0; i < activeGoals.size(); i++) {
-            this.activeGoalPositions[i] = activeGoals.get(i).position;
-            this.activeGoalRobots[i] = activeGoals.get(i).robotNumber;
+        val activeGoals = this.board.getActiveGoals()
+        this.isMultiGoalMode = (activeGoals.size > 1)
+        this.activeGoalPositions = IntArray(activeGoals.size)
+        this.activeGoalRobots = IntArray(activeGoals.size)
+        for (i in activeGoals.indices) {
+            this.activeGoalPositions[i] = activeGoals.get(i)!!.position
+            this.activeGoalRobots[i] = activeGoals.get(i)!!.robotNumber
         }
-        
+
+
         // Calculate MAX_DEPTH based on robot count and multi-goal mode
-        this.MAX_DEPTH = this.isMultiGoalMode ? 
-            getMaxDepthForMultiGoal(board.getNumRobots()) : 
-            getMaxDepthForRobots(board.getNumRobots());
-        
+        this.MAX_DEPTH =
+            if (this.isMultiGoalMode) getMaxDepthForMultiGoal(board.numRobots) else getMaxDepthForRobots(
+                board.numRobots
+            )
+
+
         // Set memory check interval: every recursion for multi-goal (DFS can allocate 100s MB between checks)
-        this.memoryCheckInterval = this.isMultiGoalMode ? 1 : 1000;
-        
-        this.obstacles = new int[MAX_DEPTH][]; // Initialize here
-        this.initObstacles(); // Call after MAX_DEPTH and obstacles are initialized
-        this.states = new int[MAX_DEPTH][this.board.getRobotPositions().length];
-        this.directions = new int[MAX_DEPTH][this.board.getRobotPositions().length];
-        this.goalPosition = (null == this.board.getGoal() ? 0 : this.board.getGoal().position);
-        this.minRobotLast = (this.isBoardGoalWildcard ? 0 : this.states[0].length - 1); //swapGoalLast
-        this.goalRobot = (this.isBoardGoalWildcard ? (null == this.board.getGoal() ? 0 : this.board.getGoal().robotNumber) : this.minRobotLast); //swapGoalLast
-        this.isSolution01 = this.board.isSolution01();
-        this.isSolution01NoSpeedup = (true == this.isSolution01) && ((true == this.isBoardGoalWildcard) || (4 > this.board.getNumRobots()));
-        this.minimumMovesToGoal = new int[board.size];
-        this.directionIncrement = this.board.directionIncrement;
-        
+        this.memoryCheckInterval = if (this.isMultiGoalMode) 1 else 1000
+
+        this.obstacles = Array(MAX_DEPTH) { IntArray(board.size) } // Initialize here
+        this.initObstacles() // Call after MAX_DEPTH and obstacles are initialized
+        this.states = Array(MAX_DEPTH) { IntArray(this.board.robotPositions.size) }
+        this.directions = Array(MAX_DEPTH) { IntArray(this.board.robotPositions.size) }
+        this.goalPosition = (if (null == this.board.getGoal()) 0 else this.board.getGoal().position)
+        this.minRobotLast =
+            (if (this.isBoardGoalWildcard) 0 else this.states[0].size - 1) //swapGoalLast
+        this.goalRobot =
+            (if (this.isBoardGoalWildcard) (if (null == this.board.getGoal()) 0 else this.board.getGoal().robotNumber) else this.minRobotLast) //swapGoalLast
+        this.isSolution01 = this.board.isSolution01
+        this.isSolution01NoSpeedup =
+            (true == this.isSolution01) && ((true == this.isBoardGoalWildcard) || (4 > this.board.numRobots))
+        this.minimumMovesToGoal = IntArray(board.size)
+        this.directionIncrement = this.board.directionIncrement
+
         if (this.isMultiGoalMode) {
-            Logger.println("[MULTI_GOAL] Multi-goal mode active with " + activeGoals.size() + " goals, MAX_DEPTH=" + this.MAX_DEPTH);
-            for (int i = 0; i < activeGoals.size(); i++) {
-                Logger.println("[MULTI_GOAL]   Goal " + i + ": robot=" + this.activeGoalRobots[i] + " position=" + this.activeGoalPositions[i]);
+            Logger.println("[MULTI_GOAL] Multi-goal mode active with " + activeGoals.size + " goals, MAX_DEPTH=" + this.MAX_DEPTH)
+            for (i in activeGoals.indices) {
+                Logger.println("[MULTI_GOAL]   Goal " + i + ": robot=" + this.activeGoalRobots[i] + " position=" + this.activeGoalPositions[i])
             }
         }
     }
-    
-    
-    
-    private void initObstacles() {
-        this.obstacles[0] = new int[board.size];
-        for (int pos = 0;  pos < this.obstacles[0].length;  ++pos) {
-            int obstacle = 0;
-            for (int dir = 0;  dir < 4;  ++dir) {
-                if (true == this.boardWalls[dir][pos]) { obstacle |= (1 << dir); }
+
+
+    private fun initObstacles() {
+        this.obstacles[0] = IntArray(board.size)
+        for (pos in this.obstacles[0].indices) {
+            var obstacle = 0
+            for (dir in 0..3) {
+                if (true == this.boardWalls[dir][pos]) {
+                    obstacle = obstacle or (1 shl dir)
+                }
             }
-            this.obstacles[0][pos] = obstacle;
+            this.obstacles[0][pos] = obstacle
         }
-        for (int depth = 1;  depth < this.obstacles.length;  ++depth) {
-            this.obstacles[depth] = this.obstacles[0].clone();
+        for (depth in 1..<this.obstacles.size) {
+            this.obstacles[depth] = this.obstacles[0].clone()
         }
     }
-    
-    
-    
-    @Override
-    public List<Solution> execute() throws InterruptedException {
-        final long startExecute = System.nanoTime();
-        this.lastResultSolutions = new ArrayList<Solution>();
-        
-        Logger.println("***** " + this.getClass().getSimpleName() + " *****");
-        Logger.println("Options: " + this.getOptionsAsString());
-        Logger.println(android.util.Log.DEBUG, "DriftingDroid", "[SOLVER_MEMORY] Number of robots: %d, Using MAX_DEPTH: %d", board.getNumRobots(), this.MAX_DEPTH);
-        final Runtime rtMem = Runtime.getRuntime();
-        Logger.println(android.util.Log.DEBUG, "DriftingDroid", "[SOLVER_MEMORY] Available memory: %d MB (free=%d total=%d max=%d)", 
-                (rtMem.maxMemory() - rtMem.totalMemory() + rtMem.freeMemory()) / (1024 * 1024),
-                rtMem.freeMemory() / (1024 * 1024),
-                rtMem.totalMemory() / (1024 * 1024),
-                rtMem.maxMemory() / (1024 * 1024));
-        
+
+
+    @Throws(InterruptedException::class)
+    public override fun execute(): List<Solution> {
+        val startExecute = System.nanoTime()
+        this.lastResultSolutions = ArrayList<Solution>()
+
+        Logger.println("***** " + this.javaClass.getSimpleName() + " *****")
+        Logger.println("Options: " + this.getOptionsAsString())
+        Logger.println(
+            Log.DEBUG,
+            "DriftingDroid",
+            "[SOLVER_MEMORY] Number of robots: %d, Using MAX_DEPTH: %d",
+            board.numRobots,
+            this.MAX_DEPTH
+        )
+        val rtMem = Runtime.getRuntime()
+        Logger.println(
+            Log.DEBUG,
+            "DriftingDroid",
+            "[SOLVER_MEMORY] Available memory: %d MB (free=%d total=%d max=%d)",
+            (rtMem.maxMemory() - rtMem.totalMemory() + rtMem.freeMemory()) / (1024 * 1024),
+            rtMem.freeMemory() / (1024 * 1024),
+            rtMem.totalMemory() / (1024 * 1024),
+            rtMem.maxMemory() / (1024 * 1024)
+        )
+
         if (null == this.board.getGoal()) {
-            Logger.println("no goal is set - nothing to solve!");
+            Logger.println("no goal is set - nothing to solve!")
         } else {
-            this.states[0] = this.board.getRobotPositions().clone();
-            swapGoalLast(this.states[0]);   //goal robot is always the last one.
-            Arrays.fill(this.directions[0], DIRECTION_NOT_MOVED_YET);
-            this.precomputeMinimumMovesToGoal();
-            this.knownStates = new KnownStates();
-            
-            Logger.println("startState=" + this.stateString(this.states[0]));
-            Logger.println("solution01=" + this.isSolution01 + "  isSolution01NoSpeedup=" + this.isSolution01NoSpeedup);
-            Logger.println("goalWildcard=" + this.isBoardGoalWildcard);
-            Logger.println(this.knownStates.getInfo());
-            
-            this.iddfs();
-            
+            this.states[0] = this.board.robotPositions.clone()
+            swapGoalLast(this.states[0]) //goal robot is always the last one.
+            Arrays.fill(this.directions[0], DIRECTION_NOT_MOVED_YET)
+            this.precomputeMinimumMovesToGoal()
+            this.knownStates = KnownStates()
+
+            Logger.println("startState=" + this.stateString(this.states[0]))
+            Logger.println("solution01=" + this.isSolution01 + "  isSolution01NoSpeedup=" + this.isSolution01NoSpeedup)
+            Logger.println("goalWildcard=" + this.isBoardGoalWildcard)
+            Logger.println(this.knownStates!!.info)
+
+            this.iddfs()
+
             if (this.knownStates != null) {
-                this.solutionStoredStates = this.knownStates.size();
-                this.solutionMemoryMegabytes = this.knownStates.getMegaBytesAllocated();
-                this.knownStates = null;    //allow garbage collection
+                this.solutionStoredStates = this.knownStates!!.size()
+                this.solutionMemoryMegabytes = this.knownStates!!.megaBytesAllocated
+                this.knownStates = null //allow garbage collection
             }
         }
-        this.sortSolutions();
-        
-        this.solutionMilliSeconds = (System.nanoTime() - startExecute) / 1000000L;
-        return this.lastResultSolutions;
+        this.sortSolutions()
+
+        this.solutionMilliSeconds = (System.nanoTime() - startExecute) / 1000000L
+        return this.lastResultSolutions!!
     }
-    
-    
-    
-    private void precomputeMinimumMovesToGoal() {
-        final boolean[] posToDo = new boolean[this.minimumMovesToGoal.length];
-        Arrays.fill(this.minimumMovesToGoal, Integer.MAX_VALUE);
-        this.minimumMovesToGoal[this.goalPosition] = 0;
-        posToDo[this.goalPosition] = true;
-        for (boolean done = false;  false == done;  ) {
-            done = true;
-            for (int pos = 0;  pos < posToDo.length;  ++pos) {
+
+
+    private fun precomputeMinimumMovesToGoal() {
+        val posToDo = BooleanArray(this.minimumMovesToGoal.size)
+        Arrays.fill(this.minimumMovesToGoal, Int.MAX_VALUE)
+        this.minimumMovesToGoal[this.goalPosition] = 0
+        posToDo[this.goalPosition] = true
+        var done = false
+        while (false == done) {
+            done = true
+            for (pos in posToDo.indices) {
                 if (true == posToDo[pos]) {
-                    posToDo[pos] = false;
-                    final int depth = this.minimumMovesToGoal[pos] + 1;
-                    int dir = -1;
-                    for (int dirIncr : this.directionIncrement) {
-                        int newPos = pos;
-                        final boolean[] walls = this.boardWalls[++dir];
+                    posToDo[pos] = false
+                    val depth = this.minimumMovesToGoal[pos] + 1
+                    var dir = -1
+                    for (dirIncr in this.directionIncrement) {
+                        var newPos = pos
+                        val walls = this.boardWalls[++dir]
                         while (false == walls[newPos]) {    //move the robot until it reaches a wall.
-                            newPos += dirIncr;              //NOTE: we rely on the fact that all boards are surrounded by outer walls.
+                            newPos += dirIncr //NOTE: we rely on the fact that all boards are surrounded by outer walls.
                             if (depth < this.minimumMovesToGoal[newPos]) {
-                                this.minimumMovesToGoal[newPos] = depth;
-                                posToDo[newPos] = true;
-                                done = false;
+                                this.minimumMovesToGoal[newPos] = depth
+                                posToDo[newPos] = true
+                                done = false
                             }
                         }
                     }
@@ -213,351 +196,417 @@ public class SolverIDDFS extends Solver {
             }
         }
     }
-    
-    
-    
-    private void iddfs() throws InterruptedException {
-        final long nanoStart = System.nanoTime();
-        final boolean doDfsFast = (false == this.isBoardGoalWildcard) && (false == this.isSolution01) && (true == this.optAllowRebounds);
-        Logger.println("doDfsFast=" + doDfsFast);
+
+
+    @Throws(InterruptedException::class)
+    private fun iddfs() {
+        val nanoStart = System.nanoTime()
+        val doDfsFast =
+            (false == this.isBoardGoalWildcard) && (false == this.isSolution01) && (true == this.optAllowRebounds)
+        Logger.println("doDfsFast=" + doDfsFast)
         if (this.isMultiGoalMode) {
-            Logger.println("[MULTI_GOAL] Multi-goal mode: MAX_DEPTH limited to " + MAX_DEPTH + " to prevent OOM");
+            Logger.println("[MULTI_GOAL] Multi-goal mode: MAX_DEPTH limited to " + MAX_DEPTH + " to prevent OOM")
         }
-        
-        for (this.depthLimit = 2;  MAX_DEPTH > this.depthLimit;  ++this.depthLimit) {
+
+        this.depthLimit = 2
+        while (MAX_DEPTH > this.depthLimit) {
             // Check for thread interruption to allow graceful cancellation
             if (Thread.currentThread().isInterrupted()) {
-                Logger.println("iddfs: Thread interrupted, stopping solver");
-                throw new InterruptedException("Solver was cancelled");
+                Logger.println("iddfs: Thread interrupted, stopping solver")
+                throw InterruptedException("Solver was cancelled")
             }
-            
+
+
             // Reset memory monitoring for this depth level
-            this.memoryLow = false;
-            this.recursionCounter = 0;
-            
-            final long nanoDfs = System.nanoTime();
+            this.memoryLow = false
+            this.recursionCounter = 0
+
+            val nanoDfs = System.nanoTime()
             try {
                 if (doDfsFast) {
-                    this.dfsRecursionFast(1, -1, -1, this.states[0]);
+                    this.dfsRecursionFast(1, -1, -1, this.states[0])
                 } else {
-                    this.dfsRecursion(1, -1, -1, this.states[0], this.directions[0]);
+                    this.dfsRecursion(1, -1, -1, this.states[0], this.directions[0])
                 }
-            } catch (OutOfMemoryError oom) {
+            } catch (oom: OutOfMemoryError) {
                 // Emergency: free knownStates immediately to reclaim memory
-                this.knownStates = null;
+                this.knownStates = null
                 // Do NOT call System.gc() here - it can trigger GcWatcher.finalize() timeout on Android
-                Logger.println("[MEMORY] OOM caught in iddfs at depthLimit=" + this.depthLimit + " - freed knownStates");
-                this.memoryLow = true;
+                Logger.println("[MEMORY] OOM caught in iddfs at depthLimit=" + this.depthLimit + " - freed knownStates")
+                this.memoryLow = true
             }
-            final long nanoEnd = System.nanoTime();
-            
-            final Runtime rt = Runtime.getRuntime();
-            final double memPercent = ((rt.totalMemory() - rt.freeMemory()) * 100.0) / rt.maxMemory();
-            final int megaBytes = (this.knownStates != null) ? this.knownStates.getMegaBytesAllocated() : 0;
-            Logger.println("iddfs:  finished depthLimit=" + this.depthLimit +
-                    " megaBytes=" + megaBytes +
-                    " memory=" + String.format("%.1f", memPercent) + "%" +
-                    " time=" + (nanoEnd - nanoDfs) / 1000000L + "ms" + 
-                    " totalTime=" + (nanoEnd - nanoStart) / 1000000L + "ms");
-            
+            val nanoEnd = System.nanoTime()
+
+            val rt = Runtime.getRuntime()
+            val memPercent = ((rt.totalMemory() - rt.freeMemory()) * 100.0) / rt.maxMemory()
+            val megaBytes =
+                if (this.knownStates != null) this.knownStates!!.megaBytesAllocated else 0
+            Logger.println(
+                "iddfs:  finished depthLimit=" + this.depthLimit +
+                        " megaBytes=" + megaBytes +
+                        " memory=" + String.format("%.1f", memPercent) + "%" +
+                        " time=" + (nanoEnd - nanoDfs) / 1000000L + "ms" +
+                        " totalTime=" + (nanoEnd - nanoStart) / 1000000L + "ms"
+            )
+
+
             // If memory was critically low during DFS, stop searching
             if (this.memoryLow) {
-                Logger.println("[MEMORY] Stopping search: memory was critically low during depth " + this.depthLimit);
-                break;
+                Logger.println("[MEMORY] Stopping search: memory was critically low during depth " + this.depthLimit)
+                break
             }
-            
-            if (false == this.lastResultSolutions.isEmpty()) {
-                break;  //found solution(s)
+
+            if (false == this.lastResultSolutions!!.isEmpty()) {
+                break //found solution(s)
             }
+            ++this.depthLimit
         }
     }
-    
-    
-    
+
+
     // standard version: supports wildcard goal, solution01 special case and option noRebounds
-    private void dfsRecursion(final int depth, final int prevRobo, final int prevDirBit0, final int[] oldState, final int[] oldDirs) throws InterruptedException {
+    @Throws(InterruptedException::class)
+    private fun dfsRecursion(
+        depth: Int,
+        prevRobo: Int,
+        prevDirBit0: Int,
+        oldState: IntArray,
+        oldDirs: IntArray
+    ) {
         // Periodic memory check (shared counter with dfsRecursionFast)
         if (this.memoryLow) {
-            return;
+            return
         }
         if (++this.recursionCounter >= this.memoryCheckInterval) {
-            this.recursionCounter = 0;
+            this.recursionCounter = 0
             if (Thread.currentThread().isInterrupted()) {
-                throw new InterruptedException("Solver was cancelled");
+                throw InterruptedException("Solver was cancelled")
             }
-            final Runtime rt = Runtime.getRuntime();
-            final long freeBytes = rt.maxMemory() - rt.totalMemory() + rt.freeMemory();
+            val rt = Runtime.getRuntime()
+            val freeBytes = rt.maxMemory() - rt.totalMemory() + rt.freeMemory()
             if (freeBytes < rt.maxMemory() / 2) { // abort if less than 50% free
-                this.memoryLow = true;
-                return;
+                this.memoryLow = true
+                return
             }
         }
-        final int height = this.depthLimit - depth + 1;
-        final int minMovesToGoal;
+        val height = this.depthLimit - depth + 1
+        val minMovesToGoal: Int
         if (true == this.isBoardGoalWildcard) {
-            int min = Integer.MAX_VALUE;
-            for (final int pos : oldState) {
-                final int tmp = this.minimumMovesToGoal[pos];
-                if (min > tmp) { min = tmp; }
+            var min = Int.MAX_VALUE
+            for (pos in oldState) {
+                val tmp = this.minimumMovesToGoal[pos]
+                if (min > tmp) {
+                    min = tmp
+                }
             }
-            minMovesToGoal = min;
+            minMovesToGoal = min
         } else {
-            minMovesToGoal = this.minimumMovesToGoal[oldState[this.goalRobot]];
+            minMovesToGoal = this.minimumMovesToGoal[oldState[this.goalRobot]]
         }
         if (minMovesToGoal > height) {
-            return; //useless to move any robot: can't reach goal
+            return  //useless to move any robot: can't reach goal
         }
-        final int[] obstacles = this.obstacles[depth];
-        final int[] newState = this.states[depth];
-        final int depth1 = depth + 1;
-        for (final int pos : oldState) { obstacles[pos] |= OBSTACLE_ROBOT; }  //set robot positions
-        System.arraycopy(oldState, 0, newState, 0, oldState.length);
-        final boolean doRecursion = (this.depthLimit > depth1);
+        val obstacles = this.obstacles[depth]
+        val newState = this.states[depth]
+        val depth1 = depth + 1
+        for (pos in oldState) {
+            obstacles[pos] = obstacles[pos] or OBSTACLE_ROBOT
+        } //set robot positions
+
+        System.arraycopy(oldState, 0, newState, 0, oldState.size)
+        val doRecursion = (this.depthLimit > depth1)
         //move all robots
-        int robo = 0;
-        for (final int oldRoboPos : oldState) {
-            final boolean isGoalRobot = (this.goalRobot == robo) || (this.goalRobot < 0);
+        var robo = 0
+        for (oldRoboPos in oldState) {
+            val isGoalRobot = (this.goalRobot == robo) || (this.goalRobot < 0)
             if ((minMovesToGoal == height) && (false == isGoalRobot)) {
-                ++robo;
-                continue;   //useless to move this robot: can't reach goal
+                ++robo
+                continue  //useless to move this robot: can't reach goal
             }
-            final int oldDir = oldDirs[robo];
-            final int obstacleInit = obstacles[oldRoboPos];
-            int dir = 0;
-            for (final int dirIncr : this.directionIncrement) {
-                if (((true == this.optAllowRebounds) || ((oldDir != dir) && (oldDir != (dir ^ 2)))) // (dir + 2) & 3
-                        && ((prevRobo != robo) || (prevDirBit0 != (dir & 1)))) {
-                    int newRoboPos = oldRoboPos;
-                    int obstacle = obstacleInit;
-                    final int wallMask = (1 << dir);
-                    while (0 == (obstacle & wallMask)) {        //move the robot until it reaches a wall or another robot.
-                        newRoboPos += dirIncr;                  //NOTE: we rely on the fact that all boards are surrounded
-                        obstacle = obstacles[newRoboPos];       //by outer walls. without the outer walls we would need
-                        if (0 != (obstacle & OBSTACLE_ROBOT)) { //some additional boundary checking here.
-                            newRoboPos -= dirIncr;
-                            break;
+            val oldDir = oldDirs[robo]
+            val obstacleInit = obstacles[oldRoboPos]
+            var dir = 0
+            for (dirIncr in this.directionIncrement) {
+                if (((true == this.optAllowRebounds) || ((oldDir != dir) && (oldDir != (dir xor 2)))) // (dir + 2) & 3
+                    && ((prevRobo != robo) || (prevDirBit0 != (dir and 1)))
+                ) {
+                    var newRoboPos = oldRoboPos
+                    var obstacle = obstacleInit
+                    val wallMask = (1 shl dir)
+                    while (0 == (obstacle and wallMask)) {        //move the robot until it reaches a wall or another robot.
+                        newRoboPos += dirIncr //NOTE: we rely on the fact that all boards are surrounded
+                        obstacle =
+                            obstacles[newRoboPos] //by outer walls. without the outer walls we would need
+                        if (0 != (obstacle and OBSTACLE_ROBOT)) { //some additional boundary checking here.
+                            newRoboPos -= dirIncr
+                            break
                         }
                     }
                     //the robot has actually moved
                     //special case (isSolution01): the goal robot has _NOT_ arrived at the goal
                     if ((oldRoboPos != newRoboPos)
-                            && ((false == this.isSolution01) || !((this.goalPosition == newRoboPos) && (true == isGoalRobot)))) {
-                        newState[robo] = newRoboPos;
+                        && ((false == this.isSolution01) || !((this.goalPosition == newRoboPos) && (true == isGoalRobot)))
+                    ) {
+                        newState[robo] = newRoboPos
                         //special case (isSolution01): we must be able to visit states more than once, so we don't add them to knownStates
                         //the new state is not already known (i.e. stored in knownStates)
-                        if (this.isSolution01NoSpeedup || (this.isSolution01 && isGoalRobot) || (this.knownStates.add(newState, height))) {
-                            final int[] newDirs = this.directions[depth];
-                            System.arraycopy(oldDirs, 0, newDirs, 0, oldDirs.length);
-                            newDirs[robo] = dir;
+                        if (this.isSolution01NoSpeedup || (this.isSolution01 && isGoalRobot) || (this.knownStates!!.add(
+                                newState,
+                                height
+                            ))
+                        ) {
+                            val newDirs = this.directions[depth]
+                            System.arraycopy(oldDirs, 0, newDirs, 0, oldDirs.size)
+                            newDirs[robo] = dir
                             if (true == doRecursion) {
-                                this.dfsRecursion(depth1, robo, (dir & 1), newState, newDirs);
+                                this.dfsRecursion(depth1, robo, (dir and 1), newState, newDirs)
                             } else {
-                                this.dfsLast(depth1, robo, (dir & 1), newState, newDirs);
+                                this.dfsLast(depth1, robo, (dir and 1), newState, newDirs)
                             }
                         }
                     }
                 }
-                ++dir;
+                ++dir
             }
-            newState[robo++] = oldRoboPos;
+            newState[robo++] = oldRoboPos
         }
-        for (final int pos : oldState) { obstacles[pos] ^= OBSTACLE_ROBOT; }  //unset robot positions
+        for (pos in oldState) {
+            obstacles[pos] = obstacles[pos] xor OBSTACLE_ROBOT
+        } //unset robot positions
     }
-    
-    
-    
+
+
     // fast version: (false == this.isBoardGoalWildcard) && (false == this.isSolution01) && (true == this.optAllowRebounds)
-    private void dfsRecursionFast(final int depth, final int prevRobo, final int prevDirBit0, final int[] oldState) throws InterruptedException {
+    @Throws(InterruptedException::class)
+    private fun dfsRecursionFast(depth: Int, prevRobo: Int, prevDirBit0: Int, oldState: IntArray) {
         // Periodic memory check: cheap flag test on every call, expensive Runtime check only every N calls
         if (this.memoryLow) {
-            return; // Abort this branch - memory is critically low
+            return  // Abort this branch - memory is critically low
         }
         if (++this.recursionCounter >= this.memoryCheckInterval) {
-            this.recursionCounter = 0;
+            this.recursionCounter = 0
             if (Thread.currentThread().isInterrupted()) {
-                throw new InterruptedException("Solver was cancelled");
+                throw InterruptedException("Solver was cancelled")
             }
-            final Runtime rt = Runtime.getRuntime();
-            final long freeBytes = rt.maxMemory() - rt.totalMemory() + rt.freeMemory();
+            val rt = Runtime.getRuntime()
+            val freeBytes = rt.maxMemory() - rt.totalMemory() + rt.freeMemory()
             if (freeBytes < rt.maxMemory() / 2) { // abort if less than 50% free
-                this.memoryLow = true;
-                return;
+                this.memoryLow = true
+                return
             }
         }
-        final int minMovesToGoal = this.minimumMovesToGoal[oldState[this.goalRobot]];
-        final int height = this.depthLimit - depth + 1;
+        val minMovesToGoal = this.minimumMovesToGoal[oldState[this.goalRobot]]
+        val height = this.depthLimit - depth + 1
         if (minMovesToGoal > height) {
-            return; //useless to move any robot: can't reach goal
+            return  //useless to move any robot: can't reach goal
         }
-        final int[] obstacles = this.obstacles[depth];
-        final int[] newState = this.states[depth];
-        final int depth1 = depth + 1;
-        for (final int pos : oldState) { obstacles[pos] |= OBSTACLE_ROBOT; }  //set robot positions
-        final boolean doRecursion = (this.depthLimit > depth1);
-        System.arraycopy(oldState, 0, newState, 0, oldState.length);
+        val obstacles = this.obstacles[depth]
+        val newState = this.states[depth]
+        val depth1 = depth + 1
+        for (pos in oldState) {
+            obstacles[pos] = obstacles[pos] or OBSTACLE_ROBOT
+        } //set robot positions
+
+        val doRecursion = (this.depthLimit > depth1)
+        System.arraycopy(oldState, 0, newState, 0, oldState.size)
         //move all robots
-        int robo = 0;
-        for (final int oldRoboPos : oldState) {
+        var robo = 0
+        for (oldRoboPos in oldState) {
             if ((minMovesToGoal == height) && (this.goalRobot != robo)) {
-                ++robo; //useless to move this robot: can't reach goal
+                ++robo //useless to move this robot: can't reach goal
             } else {
-                final int obstacleInit = obstacles[oldRoboPos];
-                int dir = 0;
-                for (final int dirIncr : this.directionIncrement) {
-                    if ((prevRobo != robo) || (prevDirBit0 != (dir & 1))) {
-                        int newRoboPos = oldRoboPos;
-                        int obstacle = obstacleInit;
-                        final int wallMask = (1 << dir);
-                        while (0 == (obstacle & wallMask)) {        //move the robot until it reaches a wall or another robot.
-                            newRoboPos += dirIncr;                  //NOTE: we rely on the fact that all boards are surrounded
-                            obstacle = obstacles[newRoboPos];       //by outer walls. without the outer walls we would need
-                            if (0 != (obstacle & OBSTACLE_ROBOT)) { //some additional boundary checking here.
-                                newRoboPos -= dirIncr;
-                                break;
+                val obstacleInit = obstacles[oldRoboPos]
+                var dir = 0
+                for (dirIncr in this.directionIncrement) {
+                    if ((prevRobo != robo) || (prevDirBit0 != (dir and 1))) {
+                        var newRoboPos = oldRoboPos
+                        var obstacle = obstacleInit
+                        val wallMask = (1 shl dir)
+                        while (0 == (obstacle and wallMask)) {        //move the robot until it reaches a wall or another robot.
+                            newRoboPos += dirIncr //NOTE: we rely on the fact that all boards are surrounded
+                            obstacle =
+                                obstacles[newRoboPos] //by outer walls. without the outer walls we would need
+                            if (0 != (obstacle and OBSTACLE_ROBOT)) { //some additional boundary checking here.
+                                newRoboPos -= dirIncr
+                                break
                             }
                         }
                         //the robot has actually moved
                         if (oldRoboPos != newRoboPos) {
-                            newState[robo] = newRoboPos;
+                            newState[robo] = newRoboPos
                             //the new state is not already known (i.e. stored in knownStates)
-                            if (true == this.knownStates.add(newState, height)) {
+                            if (true == this.knownStates!!.add(newState, height)) {
                                 if (true == doRecursion) {
-                                    this.dfsRecursionFast(depth1, robo, (dir & 1), newState);
+                                    this.dfsRecursionFast(depth1, robo, (dir and 1), newState)
                                 } else {
-                                    this.dfsLastFast(depth1, robo, (dir & 1), newState);
+                                    this.dfsLastFast(depth1, robo, (dir and 1), newState)
                                 }
                             }
                         }
                     }
-                    ++dir;
+                    ++dir
                 }
-                newState[robo++] = oldRoboPos;
+                newState[robo++] = oldRoboPos
             }
         }
-        for (final int pos : oldState) { obstacles[pos] ^= OBSTACLE_ROBOT; }  //unset robot positions
+        for (pos in oldState) {
+            obstacles[pos] = obstacles[pos] xor OBSTACLE_ROBOT
+        } //unset robot positions
     }
-    
-    
-    
+
+
     // standard version: supports wildcard goal, solution01 special case and option noRebounds
-    private void dfsLast(final int depth, final int prevRobo, final int prevDirBit0, final int[] oldState, final int[] oldDirs) throws InterruptedException {
-        if (Thread.interrupted()) { throw new InterruptedException(); }
-        final int[] obstacles = this.obstacles[depth];
-        for (final int pos : oldState) { obstacles[pos] |= OBSTACLE_ROBOT; }  //set robot positions
+    @Throws(InterruptedException::class)
+    private fun dfsLast(
+        depth: Int,
+        prevRobo: Int,
+        prevDirBit0: Int,
+        oldState: IntArray,
+        oldDirs: IntArray
+    ) {
+        if (Thread.interrupted()) {
+            throw InterruptedException()
+        }
+        val obstacles = this.obstacles[depth]
+        for (pos in oldState) {
+            obstacles[pos] = obstacles[pos] or OBSTACLE_ROBOT
+        } //set robot positions
+
         //move goal robot(s) only
-        for (int robo = this.minRobotLast;  robo < oldState.length;  ++robo) {
-            final int oldRoboPos = oldState[robo];
-            final int oldDir = oldDirs[robo];
-            final int obstacleInit = obstacles[oldRoboPos];
-            int dir = 0;
-            for (final int dirIncr : this.directionIncrement) {
-                if (((true == this.optAllowRebounds) || ((oldDir != dir) && (oldDir != (dir ^ 2)))) // (dir + 2) & 3
-                    && ((prevRobo != robo) || (prevDirBit0 != (dir & 1)))) {
-                    int newRoboPos = oldRoboPos;
-                    int obstacle = obstacleInit;
-                    final int wallMask = (1 << dir);
-                    while (0 == (obstacle & wallMask)) {        //move the robot until it reaches a wall or another robot.
-                        newRoboPos += dirIncr;                  //NOTE: we rely on the fact that all boards are surrounded
-                        obstacle = obstacles[newRoboPos];       //by outer walls. without the outer walls we would need
-                        if (0 != (obstacle & OBSTACLE_ROBOT)) { //some additional boundary checking here.
-                            newRoboPos -= dirIncr;
-                            break;
+        for (robo in this.minRobotLast..<oldState.size) {
+            val oldRoboPos = oldState[robo]
+            val oldDir = oldDirs[robo]
+            val obstacleInit = obstacles[oldRoboPos]
+            var dir = 0
+            for (dirIncr in this.directionIncrement) {
+                if (((true == this.optAllowRebounds) || ((oldDir != dir) && (oldDir != (dir xor 2)))) // (dir + 2) & 3
+                    && ((prevRobo != robo) || (prevDirBit0 != (dir and 1)))
+                ) {
+                    var newRoboPos = oldRoboPos
+                    var obstacle = obstacleInit
+                    val wallMask = (1 shl dir)
+                    while (0 == (obstacle and wallMask)) {        //move the robot until it reaches a wall or another robot.
+                        newRoboPos += dirIncr //NOTE: we rely on the fact that all boards are surrounded
+                        obstacle =
+                            obstacles[newRoboPos] //by outer walls. without the outer walls we would need
+                        if (0 != (obstacle and OBSTACLE_ROBOT)) { //some additional boundary checking here.
+                            newRoboPos -= dirIncr
+                            break
                         }
                     }
                     //the robot has arrived at the goal
-                    if ((this.goalPosition == newRoboPos) && hasPerpendicularMove(depth, robo, dir)) {
-                        System.arraycopy(oldState, 0, this.states[depth], 0, oldState.length);
-                        this.states[depth][robo] = newRoboPos;
-                        this.buildSolution(depth);
+                    if ((this.goalPosition == newRoboPos) && hasPerpendicularMove(
+                            depth,
+                            robo,
+                            dir
+                        )
+                    ) {
+                        System.arraycopy(oldState, 0, this.states[depth], 0, oldState.size)
+                        this.states[depth][robo] = newRoboPos
+                        this.buildSolution(depth)
                     }
                 }
-                ++dir;
+                ++dir
             }
         }
-        for (final int pos : oldState) { obstacles[pos] ^= OBSTACLE_ROBOT; }  //unset robot positions
+        for (pos in oldState) {
+            obstacles[pos] = obstacles[pos] xor OBSTACLE_ROBOT
+        } //unset robot positions
     }
-    
-    
-    
+
+
     // fast version: (false == this.isBoardGoalWildcard) && (false == this.isSolution01) && (true == this.optAllowRebounds)
-    private void dfsLastFast(final int depth, final int prevRobo, final int prevDirBit0, final int[] oldState) throws InterruptedException {
-        if (Thread.interrupted()) { throw new InterruptedException(); }
-        final int[] obstacles = this.obstacles[depth];
-        final int oldRoboPos = oldState[this.goalRobot];
-        for (final int pos : oldState) { obstacles[pos] |= OBSTACLE_ROBOT; }  //set robot positions
-        int dir = 0;
-        final int obstacleInit = obstacles[oldRoboPos];
+    @Throws(InterruptedException::class)
+    private fun dfsLastFast(depth: Int, prevRobo: Int, prevDirBit0: Int, oldState: IntArray) {
+        if (Thread.interrupted()) {
+            throw InterruptedException()
+        }
+        val obstacles = this.obstacles[depth]
+        val oldRoboPos = oldState[this.goalRobot]
+        for (pos in oldState) {
+            obstacles[pos] = obstacles[pos] or OBSTACLE_ROBOT
+        } //set robot positions
+
+        var dir = 0
+        val obstacleInit = obstacles[oldRoboPos]
         //move goal robot only
-        for (final int dirIncr : this.directionIncrement) {
-            if ((prevRobo != this.goalRobot) || (prevDirBit0 != (dir & 1))) {
-                int newRoboPos = oldRoboPos;
-                int obstacle = obstacleInit;
-                final int wallMask = (1 << dir);
-                while (0 == (obstacle & wallMask)) {        //move the robot until it reaches a wall or another robot.
-                    newRoboPos += dirIncr;                  //NOTE: we rely on the fact that all boards are surrounded
-                    obstacle = obstacles[newRoboPos];       //by outer walls. without the outer walls we would need
-                    if (0 != (obstacle & OBSTACLE_ROBOT)) { //some additional boundary checking here.
-                        newRoboPos -= dirIncr;
-                        break;
+        for (dirIncr in this.directionIncrement) {
+            if ((prevRobo != this.goalRobot) || (prevDirBit0 != (dir and 1))) {
+                var newRoboPos = oldRoboPos
+                var obstacle = obstacleInit
+                val wallMask = (1 shl dir)
+                while (0 == (obstacle and wallMask)) {        //move the robot until it reaches a wall or another robot.
+                    newRoboPos += dirIncr //NOTE: we rely on the fact that all boards are surrounded
+                    obstacle =
+                        obstacles[newRoboPos] //by outer walls. without the outer walls we would need
+                    if (0 != (obstacle and OBSTACLE_ROBOT)) { //some additional boundary checking here.
+                        newRoboPos -= dirIncr
+                        break
                     }
                 }
                 //the robot has arrived at the goal
                 if (this.goalPosition == newRoboPos) {
-                    System.arraycopy(oldState, 0, this.states[depth], 0, oldState.length);
-                    this.states[depth][this.goalRobot] = newRoboPos;
-                    this.buildSolution(depth);
+                    System.arraycopy(oldState, 0, this.states[depth], 0, oldState.size)
+                    this.states[depth][this.goalRobot] = newRoboPos
+                    this.buildSolution(depth)
                 }
             }
-            ++dir;
+            ++dir
         }
-        for (final int pos : oldState) { obstacles[pos] ^= OBSTACLE_ROBOT; }  //unset robot positions
+        for (pos in oldState) {
+            obstacles[pos] = obstacles[pos] xor OBSTACLE_ROBOT
+        } //unset robot positions
     }
-    
-    
-    
-    private boolean hasPerpendicularMove(final int depth, final int robot, final int lastDir) {
-        int prevDir = this.directions[0][robot];
-        for (int i = 1;  depth > i;  ++i) {
-            final int thisDir = this.directions[i][robot];
-            if ((((thisDir + 1) & 3) == prevDir) || (((thisDir + 3) & 3) == prevDir)) {
-                return true;
+
+
+    private fun hasPerpendicularMove(depth: Int, robot: Int, lastDir: Int): Boolean {
+        var prevDir = this.directions[0][robot]
+        var i = 1
+        while (depth > i) {
+            val thisDir = this.directions[i][robot]
+            if ((((thisDir + 1) and 3) == prevDir) || (((thisDir + 3) and 3) == prevDir)) {
+                return true
             }
-            prevDir = thisDir;
+            prevDir = thisDir
+            ++i
         }
-        return (((lastDir + 1) & 3) == prevDir) || (((lastDir + 3) & 3) == prevDir);
+        return (((lastDir + 1) and 3) == prevDir) || (((lastDir + 3) and 3) == prevDir)
     }
-    
-    
-    
-    private void buildSolution(final int depth) {
+
+
+    private fun buildSolution(depth: Int) {
         // Multi-goal check: verify ALL goals are reached in the final state
         if (this.isMultiGoalMode) {
-            final int[] finalState = this.states[depth];
+            val finalState = this.states[depth]
             if (!isAllGoalsReached(finalState)) {
-                return; // not all goals reached yet - skip this solution
+                return  // not all goals reached yet - skip this solution
             }
         }
-        
-        Solution newSolution = new Solution(this.board);
-        int[] state0 = this.states[0].clone();
-        swapGoalLast(state0);
-        for (int i = 0;  i < depth;  ++i) {
-            final int[] state1 = this.states[i + 1].clone();
-            swapGoalLast(state1);
-            newSolution.add(new Move(this.board, state0, state1, i));
-            state0 = state1;
+
+        var newSolution = Solution(this.board)
+        var state0 = this.states[0].clone()
+        swapGoalLast(state0)
+        for (i in 0..<depth) {
+            val state1 = this.states[i + 1].clone()
+            swapGoalLast(state1)
+            newSolution.add(Move(this.board, state0, state1, i))
+            state0 = state1
         }
-        newSolution = newSolution.finish();
-        Logger.println(newSolution.toMovelistString() + " " + newSolution.toString() + " finalState=" + this.stateString(states[depth]));
-        if (false == this.lastResultSolutions.contains(newSolution)) {
-            this.lastResultSolutions.add(newSolution);
+        newSolution = newSolution.finish()
+        Logger.println(
+            newSolution.toMovelistString() + " " + newSolution.toString() + " finalState=" + this.stateString(
+                states[depth]
+            )
+        )
+        if (false == this.lastResultSolutions!!.contains(newSolution)) {
+            this.lastResultSolutions!!.add(newSolution)
         }
     }
-    
+
     /**
      * Check if all active goals are reached in the given state.
      * 
-     * KEY INSIGHT: 
+     * KEY INSIGHT:
      * The solver's existing single-goal search already finds the PRIMARY goal.
      * This method only needs to verify that ALL OTHER goals are ALSO reached in that same state.
      * 
@@ -570,126 +619,162 @@ public class SolverIDDFS extends Solver {
      * 
      * State uses swapGoalLast format: the primary goal robot is at the last index.
      */
-    private boolean isAllGoalsReached(final int[] state) {
-        final int primaryGoalRobotNumber = (null == this.board.getGoal()) ? -1 : this.board.getGoal().robotNumber;
-        for (int i = 0; i < this.activeGoalPositions.length; i++) {
-            int robotIdx = this.activeGoalRobots[i];
+    private fun isAllGoalsReached(state: IntArray): Boolean {
+        val primaryGoalRobotNumber =
+            if (null == this.board.getGoal()) -1 else this.board.getGoal().robotNumber
+        for (i in this.activeGoalPositions.indices) {
+            var robotIdx = this.activeGoalRobots[i]
             // Account for swapGoalLast: primary goal robot is swapped to last position
             if (!this.isBoardGoalWildcard && robotIdx == primaryGoalRobotNumber) {
-                robotIdx = state.length - 1;
-            } else if (!this.isBoardGoalWildcard && robotIdx == state.length - 1) {
+                robotIdx = state.size - 1
+            } else if (!this.isBoardGoalWildcard && robotIdx == state.size - 1) {
                 // The robot that was originally at last position is now at primary goal robot's position
-                robotIdx = primaryGoalRobotNumber;
+                robotIdx = primaryGoalRobotNumber
             }
             if (state[robotIdx] != this.activeGoalPositions[i]) {
-                return false;
+                return false
             }
         }
-        return true;
+        return true
     }
-    
-    
-    
-    private class KnownStates {
-        private final AllKeys allKeys;
-        
-        public KnownStates() {
-            this.allKeys = (board.sizeNumBits * (board.getNumRobots() - (isSolution01 ? 1 : 0)) <= 32) ? new AllKeysInt() : new AllKeysLong();
-        }
-        
+
+
+    private inner class KnownStates {
+        private val allKeys: AllKeys
+
         //store the unique keys of all known states
-        private abstract class AllKeys {
-            protected final KeyDepthMap theMap;
-            
-            protected AllKeys() {
-                this.theMap = KeyDepthMapFactory.newInstance(board);
+        private abstract inner class AllKeys protected constructor() {
+            val theMap: KeyDepthMap
+
+            init {
+                this.theMap = KeyDepthMapFactory.newInstance(board)
             }
-            
-            public abstract boolean add(final int[] state, final int depth);
-            
-            public long getBytesAllocated() {
-                return this.theMap.allocatedBytes();
-            }
-            
-            public abstract String getInfo();
+
+            abstract fun add(state: IntArray?, depth: Int): Boolean
+
+            val bytesAllocated: Long
+                get() = this.theMap.allocatedBytes()
+
+            abstract val info: String
         }
+
         //store the unique keys of all known states in 32-bit ints
         //supports up to 4 robots with a board size of 256 (16*16)
-        private final class AllKeysInt extends AllKeys {
-            private final KeyMakerInt keyMaker = KeyMakerInt.createInstance(board.getNumRobots(), board.sizeNumBits, isBoardGoalWildcard, isSolution01);
-            public AllKeysInt() {
-                super();
+        private inner class AllKeysInt : AllKeys() {
+            private val keyMaker: KeyMakerInt? = KeyMakerInt.createInstance(
+                board.numRobots,
+                board.sizeNumBits,
+                isBoardGoalWildcard,
+                isSolution01
+            )
+
+            override fun add(state: IntArray?, depth: Int): Boolean {
+                val key = this.keyMaker!!.run(state!!)
+                return this.theMap.putIfGreater(key, depth)
             }
-            @Override
-            public final boolean add(final int[] state, final int depth) {
-                final int key = this.keyMaker.run(state);
-                return this.theMap.putIfGreater(key, depth);
-            }
-            @Override
-            public String getInfo() {
-                return this.getClass().getSimpleName() + "," + this.theMap.getClass().getSimpleName() + "," + (null == this.keyMaker ? "n/a" : this.keyMaker.getClass().getSimpleName());
-            }
+
+            override val info: String
+                get() = this.javaClass.getSimpleName() + "," + this.theMap.javaClass.getSimpleName() + "," + (if (null == this.keyMaker) "n/a" else this.keyMaker.javaClass.getSimpleName())
         }
+
         //store the unique keys of all known states in 64-bit longs
         //supports more than 4 robots and/or board sizes larger than 256
-        private final class AllKeysLong extends AllKeys {
-            private final KeyMakerLong keyMaker = KeyMakerLong.createInstance(board.getNumRobots(), board.sizeNumBits, isBoardGoalWildcard, isSolution01);
-            public AllKeysLong() {
-                super();
+        private inner class AllKeysLong : AllKeys() {
+            private val keyMaker: KeyMakerLong? = KeyMakerLong.createInstance(
+                board.numRobots,
+                board.sizeNumBits,
+                isBoardGoalWildcard,
+                isSolution01
+            )
+
+            override fun add(state: IntArray?, depth: Int): Boolean {
+                val key = this.keyMaker!!.run(state!!)
+                return this.theMap.putIfGreater(key, depth)
             }
-            @Override
-            public final boolean add(final int[] state, final int depth) {
-                final long key = this.keyMaker.run(state);
-                return this.theMap.putIfGreater(key, depth);
-            }
-            @Override
-            public String getInfo() {
-                return this.getClass().getSimpleName() + "," + this.theMap.getClass().getSimpleName() + "," + (null == this.keyMaker ? "n/a" : this.keyMaker.getClass().getSimpleName());
-            }
+
+            override val info: String
+                get() = this.javaClass.getSimpleName() + "," + this.theMap.javaClass.getSimpleName() + "," + (if (null == this.keyMaker) "n/a" else this.keyMaker.javaClass.getSimpleName())
         }
 
         // Deterministic memory limit (Runtime.freeMemory is unreliable on Android ART):
         // - maxBytes: Trie byte limit (70% of heap) - checked every 500 states
         // This ensures the solver stops BEFORE exhausting physical RAM.
-        private final long maxBytes;
-        private int stateCount = 0;
-        {
-            final long maxHeap = Runtime.getRuntime().maxMemory();
+        private val maxBytes: Long
+        private var stateCount = 0
+
+        init {
+            val maxHeap = Runtime.getRuntime().maxMemory()
             // Budget 70% of heap for Trie states
-            maxBytes = (maxHeap * 70) / 100;
-            Logger.println("[MEMORY] KnownStates maxBytes=" + (maxBytes >> 20) + "MB (heap=" + (maxHeap >> 20) + "MB)");
+            maxBytes = (maxHeap * 70) / 100
+            Logger.println("[MEMORY] KnownStates maxBytes=" + (maxBytes shr 20) + "MB (heap=" + (maxHeap shr 20) + "MB)")
         }
-        
-        public boolean add(int[] state, int depth) {
-            if (memoryLow) return false;
+
+        init {
+            this.allKeys =
+                if (board.sizeNumBits * (board.numRobots - (if (isSolution01) 1 else 0)) <= 32) AllKeysInt() else AllKeysLong()
+        }
+
+        fun add(state: IntArray?, depth: Int): Boolean {
+            if (memoryLow) return false
             // Expensive Trie-internal check every 500 states
             if (stateCount > 0 && stateCount % 500 == 0) {
-                final long allocated = this.allKeys.getBytesAllocated();
+                val allocated = this.allKeys.bytesAllocated
                 if (allocated > maxBytes) {
-                    Logger.println("[MEMORY] knownStates aborted: Trie " + (allocated >> 20) + "MB > limit " + (maxBytes >> 20) + "MB at " + stateCount + " states");
-                    memoryLow = true;
-                    return false;
+                    Logger.println("[MEMORY] knownStates aborted: Trie " + (allocated shr 20) + "MB > limit " + (maxBytes shr 20) + "MB at " + stateCount + " states")
+                    memoryLow = true
+                    return false
                 }
             }
             try {
-                final boolean added = this.allKeys.add(state, depth);
-                if (added) stateCount++;
-                return added;
-            } catch (OutOfMemoryError oom) {
-                Logger.println("[MEMORY] OOM in knownStates.add() at " + stateCount + " states - aborting search");
-                memoryLow = true;
-                return false;
+                val added = this.allKeys.add(state, depth)
+                if (added) stateCount++
+                return added
+            } catch (oom: OutOfMemoryError) {
+                Logger.println("[MEMORY] OOM in knownStates.add() at " + stateCount + " states - aborting search")
+                memoryLow = true
+                return false
             }
         }
-        public final int size() {
-            return this.allKeys.theMap.size();
+
+        fun size(): Int {
+            return this.allKeys.theMap.size()
         }
-        public final int getMegaBytesAllocated() {
-            return (int)((this.allKeys.getBytesAllocated() + (1 << 20) - 1) >> 20);
-        }
-        public String getInfo() {
-            return "KnownStates(" + this.allKeys.getInfo() + ")";
-        }
+
+        val megaBytesAllocated: Int
+            get() = ((this.allKeys.bytesAllocated + (1 shl 20) - 1) shr 20).toInt()
+        val info: String
+            get() = "KnownStates(" + this.allKeys.info + ")"
     }
 
+    companion object {
+        // Lower MAX_DEPTH for 5+ robots to prevent OOM errors
+        // The search space grows exponentially with more robots
+        private fun getMaxDepthForRobots(numRobots: Int): Int {
+            // Scale down max depth based on number of robots to prevent OOM
+            if (numRobots >= 5) {
+                // Much lower depth for 5+ robots since search space is exponentially larger
+                return 24
+            } else if (numRobots >= 4) {
+                return 64
+            } else {
+                return 126 // Original MAX_DEPTH for 1-3 robots
+            }
+        }
+
+        // Calculate max depth for multi-goal mode
+        // Multi-goal search space is exponentially larger, but memory check prevents OOM
+        // These limits allow finding solutions while memory monitoring prevents crashes
+        private fun getMaxDepthForMultiGoal(numRobots: Int): Int {
+            if (numRobots >= 5) {
+                return 18 // 5+ robots: very large branching factor
+            } else if (numRobots >= 4) {
+                return 25 // 4 robots: DFS call-stack explodes at depth 15+ on 512MB heap
+            } else {
+                return 30 // 1-3 robots: smaller branching factor allows deeper search
+            }
+        }
+
+        private const val DIRECTION_NOT_MOVED_YET = 7
+        private val OBSTACLE_ROBOT = (1 shl 4)
+    }
 }

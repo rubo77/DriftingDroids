@@ -14,144 +14,143 @@
     You should have received a copy of the GNU General Public License
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
 */
+package driftingdroids.model
 
-package driftingdroids.model;
+import java.util.Collections
+import java.util.Formatter
 
-import java.util.Collections;
-import java.util.Formatter;
-import java.util.List;
+abstract class Solver protected constructor(board: Board) {
+    enum class SOLUTION_MODE(private val modeName: String, private val l10nKey: String) {
+        MINIMUM("minimum", "solver.Minimum.text"),
+        MAXIMUM("maximum", "solver.Maximum.text");
 
-
-
-public abstract class Solver {
-    
-    public enum SOLUTION_MODE {
-        MINIMUM("minimum", "solver.Minimum.text"), MAXIMUM("maximum", "solver.Maximum.text");
-        private final String name, l10nKey;
-        private SOLUTION_MODE(String name, String l10nKey) { this.name = name;  this.l10nKey = l10nKey; }
-        @Override public String toString() { return Board.L10N.getString(this.l10nKey); }
-        public String getName() { return this.name; }
-    }
-
-    public static final boolean USE_SLOW_SEARCH_MORE_SOLUTIONS;
-    static {
-        boolean useSlowSearchMoreSolutions = false; // TODO: test slow solver with more solutions
-        try {
-            useSlowSearchMoreSolutions = (null != System.getProperty("UseSlowSearchMoreSolutions"));
-        } catch (Exception ignored) { }
-        USE_SLOW_SEARCH_MORE_SOLUTIONS = useSlowSearchMoreSolutions;
-    }
-
-    protected final Board board;
-    protected final boolean[][] boardWalls;
-    protected final int boardSizeBitMask;
-    protected final boolean isBoardStateInt32;
-    protected final boolean isBoardGoalWildcard;
-    
-    protected SOLUTION_MODE optSolutionMode = SOLUTION_MODE.MINIMUM;
-    protected boolean optAllowRebounds = true;
-    
-    protected List<Solution> lastResultSolutions = null;
-    protected long solutionMilliSeconds = 0;
-    protected int solutionStoredStates = 0;
-    protected int solutionMemoryMegabytes = 0;
-    
-    
-    
-    public static Solver createInstance(final Board board) {
-        return new SolverIDDFS(board);
-    }
-    
-    
-    
-    public abstract List<Solution> execute() throws InterruptedException;
-    
-    
-    
-    protected Solver(final Board board) {
-        this.board = board;
-        this.boardWalls = this.board.getWalls();
-        int bitMask = 0;
-        for (int i = 0;  i < this.board.sizeNumBits;  ++i) { bitMask += bitMask + 1; }
-        this.boardSizeBitMask = bitMask;
-        this.isBoardStateInt32 = (this.board.sizeNumBits * this.board.getNumRobots() <= 32);
-        this.isBoardGoalWildcard = ((null != this.board.getGoal()) && (this.board.getGoal().robotNumber < 0));
-    }
-
-    protected final String stateString(final int[] state) {
-        final Formatter formatter = new Formatter();
-        this.swapGoalLast(state);
-        for (int i : state) {
-            formatter.format("%02x", Integer.valueOf(i));
+        override fun toString(): String {
+            return L10N.getString(this.l10nKey)
         }
-        this.swapGoalLast(state);
-        return "0x" + formatter.out().toString();
-    }
-    
-    protected final void swapGoalLast(final int[] state) {
-        //swap goal robot and last robot (if goal is not wildcard)
-        if (false == this.isBoardGoalWildcard) {
-            final int tmp = state[state.length - 1];
-            state[state.length - 1] = state[this.board.getGoal().robotNumber];
-            state[this.board.getGoal().robotNumber] = tmp;
+
+        fun getName(): String {
+            return this.modeName
         }
     }
-    
-    protected final void sortSolutions() {
-        if (0 == this.lastResultSolutions.size()) {
-            this.lastResultSolutions.add(new Solution(this.board));
+
+    companion object {
+        @JvmField
+        val USE_SLOW_SEARCH_MORE_SOLUTIONS: Boolean
+
+        init {
+            var useSlowSearchMoreSolutions = false // TODO: test slow solver with more solutions
+            try {
+                useSlowSearchMoreSolutions = null != System.getProperty("UseSlowSearchMoreSolutions")
+            } catch (ignored: Exception) {
+            }
+            USE_SLOW_SEARCH_MORE_SOLUTIONS = useSlowSearchMoreSolutions
+        }
+
+        @JvmStatic
+        fun createInstance(board: Board): Solver {
+            return SolverIDDFS(board)
+        }
+    }
+
+    @JvmField
+    protected val board: Board
+    @JvmField
+    protected val boardWalls: Array<BooleanArray>
+    @JvmField
+    protected val boardSizeBitMask: Int
+    @JvmField
+    protected val isBoardStateInt32: Boolean
+    @JvmField
+    protected val isBoardGoalWildcard: Boolean
+
+    @JvmField
+    protected var optSolutionMode: SOLUTION_MODE = SOLUTION_MODE.MINIMUM
+    @JvmField
+    protected var optAllowRebounds: Boolean = true
+
+    @JvmField
+    protected var lastResultSolutions: MutableList<Solution>? = null
+    @JvmField
+    protected var solutionMilliSeconds: Long = 0
+    @JvmField
+    protected var solutionStoredStates: Int = 0
+    @JvmField
+    protected var solutionMemoryMegabytes: Int = 0
+
+    init {
+        this.board = board
+        this.boardWalls = this.board.walls
+        var bitMask = 0
+        for (i in 0 until this.board.sizeNumBits) {
+            bitMask += bitMask + 1
+        }
+        this.boardSizeBitMask = bitMask
+        this.isBoardStateInt32 = this.board.sizeNumBits * this.board.numRobots <= 32
+        this.isBoardGoalWildcard = (null != this.board.getGoal() && this.board.getGoal().robotNumber < 0)
+    }
+
+    @Throws(InterruptedException::class)
+    abstract fun execute(): List<Solution>
+
+    protected fun stateString(state: IntArray): String {
+        val formatter = Formatter()
+        this.swapGoalLast(state)
+        for (i in state) {
+            formatter.format("%02x", i)
+        }
+        this.swapGoalLast(state)
+        return "0x" + formatter.out().toString()
+    }
+
+    protected fun swapGoalLast(state: IntArray) {
+        // swap goal robot and last robot (if goal is not wildcard)
+        if (!this.isBoardGoalWildcard) {
+            val tmp = state[state.size - 1]
+            state[state.size - 1] = state[this.board.getGoal().robotNumber]
+            state[this.board.getGoal().robotNumber] = tmp
+        }
+    }
+
+    protected fun sortSolutions() {
+        if (0 == this.lastResultSolutions!!.size) {
+            this.lastResultSolutions!!.add(Solution(this.board))
         }
         if (SOLUTION_MODE.MINIMUM == this.optSolutionMode) {
-            Collections.sort(this.lastResultSolutions);
+            Collections.sort(this.lastResultSolutions as List<Solution>)
         } else if (SOLUTION_MODE.MAXIMUM == this.optSolutionMode) {
-            Collections.sort(this.lastResultSolutions, Collections.reverseOrder());
+            Collections.sort(this.lastResultSolutions as List<Solution>, Collections.reverseOrder())
         }
     }
-    
-    
-    
-    public final List<Solution> get() {
-        return this.lastResultSolutions;
+
+    fun get(): List<Solution> {
+        return this.lastResultSolutions!!
     }
-    
-    public final void setOptionSolutionMode(SOLUTION_MODE mode) {
-        this.optSolutionMode = mode;
+
+    fun setOptionSolutionMode(mode: SOLUTION_MODE) {
+        this.optSolutionMode = mode
     }
-    
-    public final SOLUTION_MODE getOptionSolutionMode() {
-        return this.optSolutionMode;
+
+    fun getOptionSolutionMode(): SOLUTION_MODE {
+        return this.optSolutionMode
     }
-    
-    public final void setOptionAllowRebounds(boolean allowRebounds) {
-        this.optAllowRebounds = allowRebounds;
+
+    fun setOptionAllowRebounds(allowRebounds: Boolean) {
+        this.optAllowRebounds = allowRebounds
     }
-    
-    public final boolean getOptionAllowRebounds() {
-        return this.optAllowRebounds;
+
+    fun getOptionAllowRebounds(): Boolean {
+        return this.optAllowRebounds
     }
-    
-    public final String getOptionsAsString() {
-        return this.optSolutionMode.getName() + " number of robots moved; "
-                + (this.optAllowRebounds ? "with" : "no") + " rebound moves";
+
+    fun getOptionsAsString(): String {
+        return this.optSolutionMode.getName() + " number of robots moved; " +
+                (if (this.optAllowRebounds) "with" else "no") + " rebound moves"
     }
-    
-    public final long getSolutionMilliSeconds() {
-        return this.solutionMilliSeconds;
-    }
-    
-    public final int getSolutionStoredStates() {
-        return this.solutionStoredStates;
-    }
-    
-    public final int getSolutionMemoryMegabytes() {
-        return this.solutionMemoryMegabytes;
-    }
-    
-    @Override
-    public String toString() {
-        StringBuilder s = new StringBuilder();
-        s.append("storedStates=").append(this.solutionStoredStates);
-        s.append(", time=").append(this.solutionMilliSeconds / 1000d).append(" seconds");
-        return s.toString();
+
+    override fun toString(): String {
+        val s = StringBuilder()
+        s.append("storedStates=").append(this.solutionStoredStates)
+        s.append(", time=").append(this.solutionMilliSeconds / 1000.0).append(" seconds")
+        return s.toString()
     }
 }

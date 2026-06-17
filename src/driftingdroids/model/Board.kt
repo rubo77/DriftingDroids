@@ -16,7 +16,6 @@
 */
 package driftingdroids.model
 
-import roboyard.logic.core.Constants
 import java.nio.charset.StandardCharsets
 import java.util.Arrays
 import java.util.Base64
@@ -865,10 +864,20 @@ class Board private constructor(@JvmField val width: Int, val height: Int, numRo
     }
 
     companion object {
-        val WIDTH_STANDARD: Int = Constants.DEFAULT_BOARD_SIZE_X
+        private fun getConstantOrDefault(name: String, default: Int): Int {
+            return try {
+                val constantsClass = Class.forName("roboyard.logic.core.Constants")
+                val field = constantsClass.getField(name)
+                field.getInt(null)
+            } catch (e: Exception) {
+                default
+            }
+        }
+
+        val WIDTH_STANDARD: Int = getConstantOrDefault("DEFAULT_BOARD_SIZE_X", ConstantsDD.DEFAULT_BOARD_SIZE_X)
         const val WIDTH_MIN: Int = 3
         const val WIDTH_MAX: Int = 100
-        val HEIGHT_STANDARD: Int = Constants.DEFAULT_BOARD_SIZE_Y
+        val HEIGHT_STANDARD: Int = getConstantOrDefault("DEFAULT_BOARD_SIZE_Y", ConstantsDD.DEFAULT_BOARD_SIZE_Y)
         const val HEIGHT_MIN: Int = 3
         const val HEIGHT_MAX: Int = 100
         const val SIZE_MAX: Int = 4096 // 12 bits
@@ -1038,13 +1047,13 @@ class Board private constructor(@JvmField val width: Int, val height: Int, numRo
         }
 
         @JvmField
-        val NORTH: Int = Constants.NORTH // up
+        val NORTH: Int = getConstantOrDefault("NORTH", ConstantsDD.NORTH) // up
         @JvmField
-        val EAST: Int = Constants.EAST // right
+        val EAST: Int = getConstantOrDefault("EAST", ConstantsDD.EAST) // right
         @JvmField
-        val SOUTH: Int = Constants.SOUTH // down
+        val SOUTH: Int = getConstantOrDefault("SOUTH", ConstantsDD.SOUTH) // down
         @JvmField
-        val WEST: Int = Constants.WEST // left
+        val WEST: Int = getConstantOrDefault("WEST", ConstantsDD.WEST) // left
 
         private val RANDOM = Random()
 
